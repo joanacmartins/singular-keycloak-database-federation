@@ -18,6 +18,9 @@ import java.util.concurrent.Executors;
 public class DataSourceProvider implements Closeable {
     
     private static final SimpleDateFormat SIMPLE_DATE_FORMAT = new SimpleDateFormat("dd-MM-YYYY HH:mm:ss");
+    // Fail fast when the pool is exhausted, so a slow query cannot block logins for 30s (Hikari's default).
+    private static final long             CONNECTION_TIMEOUT_MS = 5_000;
+    private static final int              MAXIMUM_POOL_SIZE     = 10;
     private              ExecutorService  executor           = Executors.newFixedThreadPool(1);
     private              HikariDataSource hikariDataSource;
     
@@ -38,6 +41,8 @@ public class DataSourceProvider implements Closeable {
         hikariConfig.setJdbcUrl(url);
         hikariConfig.setConnectionTestQuery(rdbms.getTestString());
         hikariConfig.setDriverClassName(rdbms.getDriver());
+        hikariConfig.setConnectionTimeout(CONNECTION_TIMEOUT_MS);
+        hikariConfig.setMaximumPoolSize(MAXIMUM_POOL_SIZE);
         HikariDataSource newDS = new HikariDataSource(hikariConfig);
         newDS.validate();
         HikariDataSource old = this.hikariDataSource;

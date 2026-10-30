@@ -7,11 +7,12 @@ The plugin lets Keycloak 26 federate users from an external relational database 
 ## Features
 
 - User federation from PostgreSQL, MySQL, Oracle or MS SQL Server (jTDS driver shipped) via fully customizable SQL queries.
-- Lookup by id, username and e-mail; full-text search across the configured columns; paginated user listing.
+- Lookup by id, username and e-mail. Admin searches only run exact lookups or, optionally, prefix searches such as `meu-email%` (see [Search behaviour](#search-behaviour)); other partial searches and full listings return no users.
 - Password validation against either BCrypt (Blowfish) or any `MessageDigest` hash digest in hex (MD2, MD5, SHA-1, SHA-256, SHA3-224/256/384/512, SHA-384, SHA-512/224, SHA-512/256, SHA-512), plus PBKDF2-SHA256.
 - Optional flag to allow Keycloak to delete its local copy of a federated user (the row in the external database is never touched).
 - Optional flag to let attributes returned by the SQL query overwrite the values cached in Keycloak.
-- HikariCP-backed JDBC pooling, with pool reconfiguration on demand when the provider configuration changes.
+- HikariCP-backed JDBC pooling (5 s connection timeout), with pool reconfiguration on demand when the provider configuration changes.
+- Per-query timeout (`queryTimeout`, default 5 s).
 
 ## Build architecture
 
@@ -124,19 +125,39 @@ When you add the provider in the Keycloak admin console you will see, besides th
 
 - **Allow Keycloak's User Delete** - by default, deleting a federated user from Keycloak is rejected. When enabled, Keycloak removes its local representation of the user (the row in the external database is never touched), which is useful to clear sync issues.
 - **Allow DB Attributes to Overwrite Keycloak** - by default, once a user is loaded into Keycloak, its cached attributes are kept even when the SQL query starts returning different values. When enabled, attributes from the SQL query always overwrite the cached ones. Behaves best with a `NO_CACHE` cache policy; with a cached policy, attribute reload happens only after the cache entry is older than 500 ms and the username/e-mail no longer match.
+- **Allow prefix search** (`allowPrefixSearch`) - disabled by default. When enabled, searches ending with `%` or `*` run the `findBySearchTerm` query. See [Search behaviour](#search-behaviour).
+- **Query timeout (seconds)** (`queryTimeout`) - maximum time for each SQL query (`Statement.setQueryTimeout`). Default `5`; values `<= 0` fall back to the default.
 
 ### SQL queries
 
-All queries support the `?` placeholder (replaced once per `?`); for queries with a single user-provided parameter but multiple `?` placeholders (the typical `findBySearchTerm` shape that searches in several columns), the value is automatically expanded to fill every placeholder.
+All queries support the `?` placeholder (replaced once per `?`); for queries with a single user-provided parameter but multiple `?` placeholders, the value is automatically expanded to fill every placeholder.
 
 The query result must include at least the columns `id` and `username`; `email`, `firstName` and `lastName` are optional. Any additional column is mapped as a realm-scoped attribute on the federated user.
 
-- **User count SQL query** (`count`)
-- **List All Users SQL query** (`listAll`)
+- **User count SQL query** (`count`) - not used (kept for configuration compatibility).
+- **List All Users SQL query** (`listAll`) - not used (kept for configuration compatibility).
 - **Find user by id SQL query** (`findById`) - receives the user id.
-- **Find user by username SQL query** (`findByUsername`) - receives the username.
-- **Find user by search term SQL query** (`findBySearchTerm`) - receives the search term, typically used with `LIKE` in several columns.
+- **Find user by username SQL query** (`findByUsername`) - receives the username, or the e-mail on login by e-mail and on e-mail searches.
+- **Find user by search term SQL query** (`findBySearchTerm`) - used only by prefix searches (`allowPrefixSearch`). Receives the lower-cased prefix followed by `%` (e.g. `meu-email%`); compare a single indexed column, e.g. `email like ?`. Functions on the column (`upper(email)`) or extra `OR` conditions disable the index.
 - **Find password hash SQL query** (`findPasswordHash`) - must return the hash string for the given username (BCrypt hash, hex digest, or PBKDF2-SHA256 `$iterations$salt$hash`).
+
+### Search behaviour
+
+A `LIKE '%term%'` search or a `count(*)` over a large legacy table cannot use an index and turns into a full table scan. Admin API searches and counts are therefore translated into a single exact lookup:
+
+| Keycloak parameter | Lookup |
+|---|---|
+| `email` containing `@` | `findByUsername` with the trimmed, lower-cased e-mail |
+| `username` numeric | `findById` |
+| `username` containing `@` | `findByUsername` |
+| `search` numeric | `findById` |
+| `search` containing `@` (optionally between double quotes) | `findByUsername` |
+| `search`, `email` or `username` ending with `%` or `*`, with at least 3 fixed characters before it (e.g. `meu-email%`, `meu-email@*`) | `findBySearchTerm` with `meu-email%`, only when `allowPrefixSearch` is enabled, with `LIMIT` (at most 100 per page) |
+| anything else (`*`, `%gmail%`, `*@x.com`, `ab%`, partial terms without wildcard, `firstName`/`lastName`, flags only, no parameters) | none: returns no users without querying the database |
+
+A trailing wildcard (`email LIKE 'meu-email%'`) can use an index on the column; a leading one (`'%gmail'`) cannot, so it is never sent to the database.
+
+Exact counts return `0` or `1`; prefix counts return the size of the first page (at most 100); total counts return `0`. For exact lookups, pages after the first (`first > 0`) are always empty. Lower-casing the e-mail assumes a case-insensitive column collation (the MySQL default).
 
 ### Password hashing
 

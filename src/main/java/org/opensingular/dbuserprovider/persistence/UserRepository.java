@@ -44,8 +44,7 @@ public class UserRepository {
                     query = PagingUtil.formatScriptWithPageable(query, pageable, queryConfigurations.getRDBMS());
                 }
                 // Convenience: if the query has N '?' placeholders but only 1 parameter was
-                // provided (typical for "search" in findBySearchTerm/getCount, where the same
-                // string is searched across multiple columns like username/email/fullName),
+                // provided (e.g. the same value compared against multiple columns),
                 // we replicate that parameter N times automatically.
                 Object[] effectiveParams = params;
                 if (params != null && params.length == 1) {
@@ -55,8 +54,10 @@ public class UserRepository {
                         Arrays.fill(effectiveParams, params[0]);
                     }
                 }
-                log.infov("Query: {0} params: {1} ", query, Arrays.toString(effectiveParams));
+                // Parameters are not logged: they hold customer data (e.g. email).
+                log.debugv("Query: {0}", query);
                 try (PreparedStatement statement = c.prepareStatement(query)) {
+                    statement.setQueryTimeout(queryConfigurations.getQueryTimeoutSeconds());
                     if (effectiveParams != null) {
                         for (int i = 1; i <= effectiveParams.length; i++) {
                             statement.setObject(i, effectiveParams[i - 1]);
@@ -118,14 +119,6 @@ public class UserRepository {
     }
     
     
-    private Integer readInt(ResultSet rs) {
-        try {
-            return rs.next() ? rs.getInt(1) : null;
-        } catch (Exception e) {
-            throw new DBUserStorageException(e.getMessage(), e);
-        }
-    }
-    
     private Boolean readBoolean(ResultSet rs) {
         try {
             return rs.next() ? rs.getBoolean(1) : null;
@@ -142,20 +135,6 @@ public class UserRepository {
         }
     }
     
-    public List<Map<String, String>> getAllUsers() {
-        return doQuery(queryConfigurations.getListAll(), null, this::readMap);
-    }
-    
-    public int getUsersCount(String search) {
-        if (search == null || search.isEmpty()) {
-            return Optional.ofNullable(doQuery(queryConfigurations.getCount(), null, this::readInt)).orElse(0);
-        } else {
-            String query = String.format("select count(*) from (%s) count", queryConfigurations.getFindBySearchTerm());
-            return Optional.ofNullable(doQuery(query, null, this::readInt, formatSearchTerm(search))).orElse(0);
-        }
-    }
-    
-    
     public Map<String, String> findUserById(String id) {
         return Optional.ofNullable(doQuery(queryConfigurations.getFindById(), null, this::readMap, id))
                        .orElse(Collections.emptyList())
@@ -168,30 +147,15 @@ public class UserRepository {
                        .stream().findFirst();
     }
     
-    public List<Map<String, String>> findUsers(String search, PagingUtil.Pageable pageable) {
-        if (search == null || search.isEmpty()) {
-            return doQuery(queryConfigurations.getListAll(), pageable, this::readMap);
-        }
-        return doQuery(queryConfigurations.getFindBySearchTerm(), pageable, this::readMap, formatSearchTerm(search));
+    /**
+     * Runs the "findBySearchTerm" query with a prefix pattern such as {@code meu-email%}.
+     * The pageable is required, so the query always has a row limit.
+     */
+    public List<Map<String, String>> findUsersByPrefix(String prefix, Pageable pageable) {
+        return Optional.ofNullable(doQuery(queryConfigurations.getFindBySearchTerm(), pageable, this::readMap, prefix))
+                       .orElse(Collections.emptyList());
     }
 
-    /**
-     * Formats the search term to match the "upper(col) like (?)" pattern
-     * used in default queries. Adds % on both ends if not already present and
-     * uppercases the string to match the UPPER on the column.
-     *
-     * If the user already included % in the term manually, it is respected and
-     * only the uppercase transformation is applied.
-     */
-    private static String formatSearchTerm(String search) {
-        if (search == null) return null;
-        String s = search.toUpperCase();
-        if (!s.contains("%")) {
-            s = "%" + s + "%";
-        }
-        return s;
-    }
-    
     public boolean validateCredentials(String username, String password) {
         String hash = Optional.ofNullable(doQuery(queryConfigurations.getFindPasswordHash(), null, this::readString, username)).orElse("");
         if (queryConfigurations.isBlowfish()) {
