@@ -27,6 +27,10 @@ public class DBUserStorageProviderFactory implements UserStorageProviderFactory<
                                                              "            \"firstName\" (optional)," +
                                                              "            \"lastName\" (optional). Any other parameter can be mapped by aliases to a realm scope";
     private static final String PARAMETER_HELP             = " The %s is passed as query parameter.";
+    private static final String NOT_USED_HELP              = "Not used: searches only run exact lookups (findByUsername/findById) or prefix searches (findBySearchTerm) to avoid full table scans. ";
+    private static final String PREFIX_SEARCH_HELP         = "Used only when 'Allow prefix search' is enabled. Receives the lower-cased prefix followed by '%' (e.g. 'meu-email%'). " +
+                                                             "Compare a single indexed column with LIKE, e.g. email like ?. Never use functions such as upper() on the column, they disable the index. ";
+    private static final int    DEFAULT_QUERY_TIMEOUT      = 5;
     
     
     private Map<String, ProviderConfig> providerConfigPerInstance = new HashMap<>();
@@ -66,11 +70,18 @@ public class DBUserStorageProviderFactory implements UserStorageProviderFactory<
                 model.get("hashFunction"),
                 rdbms,
                 model.get("allowKeycloakDelete", false),
-                model.get("allowDatabaseToOverwriteKeycloak", false)
+                model.get("allowDatabaseToOverwriteKeycloak", false),
+                queryTimeout(model),
+                model.get("allowPrefixSearch", false)
         );
         return providerConfig;
     }
     
+    private static int queryTimeout(ComponentModel model) {
+        int timeout = model.get("queryTimeout", DEFAULT_QUERY_TIMEOUT);
+        return timeout > 0 ? timeout : DEFAULT_QUERY_TIMEOUT;
+    }
+
     @Override
     public void validateConfiguration(KeycloakSession session, RealmModel realm, ComponentModel model) throws ComponentValidationException {
         try {
@@ -136,13 +147,28 @@ public class DBUserStorageProviderFactory implements UserStorageProviderFactory<
                                            .type(ProviderConfigProperty.BOOLEAN_TYPE)
                                            .defaultValue("false")
                                            .add()
+                                           .property()
+                                           .name("queryTimeout")
+                                           .label("Query timeout (seconds)")
+                                           .helpText("Maximum time in seconds for each SQL query. Values <= 0 fall back to " + DEFAULT_QUERY_TIMEOUT + ".")
+                                           .type(ProviderConfigProperty.STRING_TYPE)
+                                           .defaultValue(String.valueOf(DEFAULT_QUERY_TIMEOUT))
+                                           .add()
+                                           .property()
+                                           .name("allowPrefixSearch")
+                                           .label("Allow prefix search")
+                                           .helpText("When enabled, searches ending with '%' or '*' (e.g. 'meu-email%') run the 'findBySearchTerm' query with at most " + DBUserStorageProvider.MAX_PREFIX_RESULTS + " results per page. " +
+                                                     "At least 3 fixed characters are required before the wildcard; wildcards at the start or in the middle are never sent to the database.")
+                                           .type(ProviderConfigProperty.BOOLEAN_TYPE)
+                                           .defaultValue("false")
+                                           .add()
         
                                            //QUERIES
         
                                            .property()
                                            .name("count")
                                            .label("User count SQL query")
-                                           .helpText("SQL query returning the total count of users")
+                                           .helpText(NOT_USED_HELP + "SQL query returning the total count of users")
                                            .type(ProviderConfigProperty.STRING_TYPE)
                                            .defaultValue("select count(*) from users")
                                            .add()
@@ -150,7 +176,7 @@ public class DBUserStorageProviderFactory implements UserStorageProviderFactory<
                                            .property()
                                            .name("listAll")
                                            .label("List All Users SQL query")
-                                           .helpText(DEFAULT_HELP_TEXT)
+                                           .helpText(NOT_USED_HELP + DEFAULT_HELP_TEXT)
                                            .type(ProviderConfigProperty.STRING_TYPE)
                                            .defaultValue("select \"id\"," +
                                                          "            \"username\"," +
@@ -192,7 +218,7 @@ public class DBUserStorageProviderFactory implements UserStorageProviderFactory<
                                            .property()
                                            .name("findBySearchTerm")
                                            .label("Find user by search term SQL query")
-                                           .helpText(DEFAULT_HELP_TEXT + String.format(PARAMETER_HELP, "search term") + PARAMETER_PLACEHOLDER_HELP)
+                                           .helpText(PREFIX_SEARCH_HELP + DEFAULT_HELP_TEXT + String.format(PARAMETER_HELP, "search prefix") + PARAMETER_PLACEHOLDER_HELP)
                                            .type(ProviderConfigProperty.STRING_TYPE)
                                            .defaultValue("select \"id\"," +
                                                          "            \"username\"," +
@@ -200,7 +226,7 @@ public class DBUserStorageProviderFactory implements UserStorageProviderFactory<
                                                          "            \"firstName\"," +
                                                          "            \"lastName\"," +
                                                          "            \"cpf\"," +
-                                                         "            \"fullName\" from users where upper(\"username\") like (?)  or upper(\"email\") like (?) or upper(\"fullName\") like (?)")
+                                                         "            \"fullName\" from users where \"email\" like ?")
                                            .add()
         
                                            .property()

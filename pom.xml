@@ -31,7 +31,7 @@
 
         <lombok.version>1.18.34</lombok.version>
         <jboss-logging.version>3.6.1.Final</jboss-logging.version>
-        <keycloak.version>26.0.5</keycloak.version>
+        <keycloak.version>26.6.1</keycloak.version>
     </properties>
 
     <repositories>
@@ -155,9 +155,15 @@
 
         <!-- Test -->
         <dependency>
-            <groupId>junit</groupId>
-            <artifactId>junit</artifactId>
-            <version>4.13.2</version>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.11.3</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>5.14.2</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
